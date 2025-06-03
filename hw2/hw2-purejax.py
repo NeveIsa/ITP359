@@ -38,7 +38,7 @@ def _():
 
     import numpy as np
 
-    import cifar10
+    from cifar10_web import cifar10
 
     import seaborn as sns
     import matplotlib.pyplot as plt
@@ -48,56 +48,55 @@ def _():
     from tqdm.autonotebook import tqdm
 
     import optax
-    return cifar10, grad, jit, jnp, mo, np, optax, plt, rng, stax, tqdm
-
-
-@app.cell
-def _(cifar10, np, plt):
-    # Train data
-    _count = 0
-    X_train, y_train = [],[]
-    X_train_noisy = []
-    for _image, _label in cifar10.data_batch_generator():
-        _image # numpy array of an image, which is of shape 32 x 32 x 3
-        _count += 1
-
-        if _count <= 100:
-            plt.subplot(10,10,_count)
-            plt.imshow(_image)
-            plt.axis("off")
-
-        X_train.append(_image/255)
-
-        _noisyimg = np.random.randn(*_image.shape) + _image/255
-        X_train_noisy.append(_noisyimg)
-
-        y_train.append(_label)
-
-    X_train = np.array(X_train)
-    # X_train = X_train.transpose(0,3,1,2)
-
-    X_train_noisy = np.array(X_train_noisy)
-
-    y_train = np.array(y_train)
-
-    plt.show()
-    return X_train, X_train_noisy
+    return cifar10, grad, jax, jit, jnp, mo, np, optax, plt, rng, stax, tqdm
 
 
 @app.cell
 def _(cifar10, np):
-    X_test, y_test = [],[]
-    # Test data
-    for _image, _label in cifar10.test_batch_generator():
-        X_test.append(_image/255)
-        y_test.append(_label)
+    X_train, train_labels, X_test, test_labels = cifar10(path=None)
+    X_test = X_test.reshape(X_test.shape[0],3,32,32).transpose(0,2,3,1)
+    X_train = X_train.reshape(X_train.shape[0],3,32,32).transpose(0,2,3,1)
 
-    y_test = np.array(y_test)
 
-    X_test = np.array(X_test)
-    # X_test = X_test.transpose(0,3,1,2)
-    X_test.shape
-    return (X_test,)
+    X_train, X_test = map(np.array, [X_train,X_test])
+    mean = X_train.mean(axis=(0,1,2)).reshape(1,1,1,-1)
+    std = X_train.std(axis=(0,1,2)).reshape(1,1,1,-1)
+
+    X_train = (X_train - mean)/std
+    X_test = (X_test - mean)/std
+    return X_test, X_train, mean, std
+
+
+@app.cell
+def _(X_train, plt):
+    plt.figure(figsize=(7,7))
+    for _i in range(100):
+        plt.subplot(10,10,_i+1)
+        _img = X_train[_i] - X_train[_i].min()
+        plt.imshow(_img/_img.max())
+
+    plt.show()  
+    return
+
+
+@app.cell
+def _(X_test, X_train, np):
+    X_train_noisy = X_train + 0.5*np.random.randn(*X_train.shape)
+    X_test_noisy = X_test + 0.5*np.random.randn(*X_test.shape)
+    return X_test_noisy, X_train_noisy
+
+
+@app.cell
+def _(X_train_noisy, plt):
+    plt.figure(figsize=(7,7))
+    for _i in range(100):
+        plt.subplot(10,10,_i+1)
+        _img = X_train_noisy[_i] - X_train_noisy[_i].min()
+        plt.imshow(_img/_img.max())
+
+
+    plt.show()  
+    return
 
 
 @app.cell
@@ -108,39 +107,62 @@ def _(
     conv4,
     conv5,
     conv6,
+    conv7,
+    conv8,
+    conv9,
     grad,
+    jax,
     jit,
     jnp,
-    mpool1,
-    mpool2,
-    mpool3,
+    mpool,
     upsample2d,
 ):
     @jit
     def encoder(params, images):
-        c1p,c2p,c3p = params 
+        c1p,c2p,c3p,c4p = params 
 
         # Encoder
-        out = conv1(c1p, images);out = mpool1(None,out)
-        out = conv2(c2p,out);out = mpool2(None,out)
-        out = conv3(c3p,out);out = mpool3(None,out)
+        out = conv1(c1p, images);out = jax.nn.relu(out); out = mpool(None,out)
+        out = conv2(c2p,out);out = jax.nn.relu(out);out = mpool(None,out)
+        out = conv3(c3p,out);out = jax.nn.relu(out);out = mpool(None,out)
+        out = conv4(c4p,out);out = jax.nn.relu(out);out = mpool(None,out)
+
 
         return out
 
     @jit
     def decoder(params, representations):
-        c4p,c5p,c6p = params
+        c5p,c6p,c7p,c8p,c9p = params
+
         # # Decoder
-        out = conv4(c4p, representations); out = upsample2d(out)
-        out = conv5(c5p, out); out = upsample2d(out)
-        out = conv6(c6p, out); out = upsample2d(out)
+        out = conv5(c5p, representations);
+        out = jax.nn.relu(out); 
+        out = upsample2d(out, scale=2)
+
+        out = conv6(c6p, out);
+        out = jax.nn.relu(out); 
+        out = upsample2d(out, scale=2)
+
+
+        out = conv7(c7p, out); 
+        out = jax.nn.relu(out); 
+        out = upsample2d(out, scale=2)
+
+        out = conv8(c8p, out); 
+        out = jax.nn.relu(out); 
+        out = upsample2d(out, scale=2)
+    # 
+        out = conv9(c9p, out);
+        # out = jax.nn.tanh(out) * std *3
+
+
 
         return out
 
     @jit
     def nnet(params, images):
-        representations = encoder(params[:3], images)
-        reconstructions = decoder(params[3:], representations)
+        representations = encoder(params[:4], images)
+        reconstructions = decoder(params[4:], representations)
         return reconstructions
 
     @jit
@@ -151,7 +173,9 @@ def _(
         return mse
 
     dlossfn = jit(grad(lossfn))
-    return dlossfn, lossfn
+
+
+    return decoder, dlossfn, encoder, lossfn, nnet
 
 
 @app.cell
@@ -164,6 +188,9 @@ def _(
     conv4params,
     conv5params,
     conv6params,
+    conv7params,
+    conv8params,
+    conv9params,
     dlossfn,
     get_batch_ids,
     lossfn,
@@ -171,25 +198,71 @@ def _(
     optax,
     tqdm,
 ):
-    params = [conv1params, conv2params, conv3params, conv4params, conv5params, conv6params]
+    params = [conv1params, conv2params, conv3params, conv4params, conv5params, conv6params, conv7params, conv8params, conv9params]
 
-    start_learning_rate = 1e-2
-    optimizer = optax.adam(start_learning_rate)
+    lr = 5e-4
+
+
+    optimizerfn = optax.amsgrad
+    optimizer = optimizerfn(learning_rate=lr)
+
+
+    # # Exponential decay of the learning rate.
+    # scheduler = optax.exponential_decay(
+    #     init_value=lr,
+    #     transition_steps=1000,
+    #     decay_rate=0.999)
+
+    # # Combining gradient transforms using `optax.chain`.
+    # optimizer = optax.chain(
+    #     # optax.clip_by_global_norm(1.0),  # Clip by the gradient by the global norm.
+    #     optax.scale_by_adam(),  # Use the updates from adam.
+    #     optax.scale_by_schedule(scheduler),  # Use the learning rate from the scheduler.
+    #     # Scale updates by -1 since optax.apply_updates is additive and we want to descend on the loss.
+    #     optax.scale(-1.0)
+    # )
+
     opt_state = optimizer.init(params)
 
-    epochs = 10
-    pbar = tqdm(range(epochs), ncols=50)
+    batchsize = 500
+    epochs = 20
+    pbar = tqdm(range(epochs), ncols=100)
     for _ in pbar:
-        for bids in get_batch_ids(X_train.shape[0]):
+
+        for bids in get_batch_ids(X_train.shape[0], batch_size=batchsize):
             _Xnoisy, _X = X_train_noisy[bids], X_train[bids]
 
             grads = dlossfn(params, _Xnoisy, _X)
-            updates, opt_state = optimizer.update(grads, opt_state)
+            updates, opt_state = optimizer.update(grads, opt_state, params)
             params = optax.apply_updates(params, updates)
 
-            if np.random.rand()>0.5:
+            if np.random.rand()>0.25:
                 _loss = lossfn(params, _Xnoisy, _X)
-                pbar.set_postfix({"loss":f"{_loss:.4f}"})
+                pbar.set_postfix({"loss":f"{_loss:.4f}", "optimfn":optimizerfn.__name__, "batchsize":f"{batchsize}"})
+    return (params,)
+
+
+@app.cell
+def _(X_test, X_test_noisy, mean, nnet, np, params, plt, std):
+    imgid = np.random.randint(300)
+
+    plt.subplot(1,3,1)
+    _img = X_test_noisy[imgid] - X_test_noisy[imgid].min()
+    _img = _img / _img.max()
+    plt.imshow(_img)
+
+    plt.subplot(1,3,2)
+    _img = nnet(params, X_test_noisy[imgid:imgid+1])[0]
+    _img = _img*std[0] + mean[0]
+    _img = _img / _img.max()
+    plt.imshow(_img)
+
+
+    plt.subplot(1,3,3)
+    _img = X_test[imgid]
+    _img = _img*std[0] + mean[0]
+    _img = _img / _img.max()
+    plt.imshow( _img)
     return
 
 
@@ -200,69 +273,83 @@ def _(mo):
 
 
 @app.cell
-def _(jnp):
+def _(jax, jnp):
     # 1) Nearest-neighbor 2× upsampling in NHWC
-    def upsample2d(x, scale=2):
-        # x: (batch, H, W, channels)
-        y = jnp.repeat(x, repeats=scale, axis=1)  # repeat rows
-        y = jnp.repeat(y, repeats=scale, axis=2)  # repeat cols
-        return y
+    # def upsample2d(x, scale=2):
+    #     # x: (batch, H, W, channels)
+    #     y = jnp.repeat(x, repeats=scale, axis=1)  # repeat rows
+    #     y = jnp.repeat(y, repeats=scale, axis=2)  # repeat cols
+    #     return y
+
+    def upsample2d(x: jnp.ndarray, scale: int = 2) -> jnp.ndarray:
+        """
+        x:     jnp.ndarray of shape (C,H,W)
+        scale: integer upsampling factor
+        returns: jnp.ndarray of shape (B, H*scale, W*scale, C)
+        """
+        B,H, W, C = x.shape
+        new_shape = (B, H * scale, W * scale, C)
+        # method="bilinear" (or "bicubic"/"lanczos3", etc.)
+        out =  jax.image.resize(x, new_shape, method="bilinear")
+
+        return out
+
+    # upsample2d = jax.vmap(__upsample2d)
     return (upsample2d,)
 
 
-@app.cell(hide_code=True)
-def _(X_test, X_train, rng, stax, upsample2d):
+@app.cell
+def _(X_test, np, rng, stax, upsample2d):
+
+
+    mpool_init,mpool = stax.MaxPool(
+        window_shape=(2, 2),
+        strides=(2, 2),
+        padding='VALID'   # or 'SAME'
+    )
+
+    OUTCHANNELS = 100
+
     # stax.Conv(out_chan, (kernel_h, kernel_w), strides=(sh, sw), padding='SAME')
-    conv1_init, conv1 = stax.Conv(10, (3, 3), strides=(1, 1), padding='SAME')
-    output_shape, conv1params = conv1_init(rng, X_train.shape)
+    conv1_init, conv1 = stax.Conv(OUTCHANNELS, (10, 10), strides=(1, 1), padding='SAME')
+    output_shape, conv1params = conv1_init(rng, X_test.shape)
+    out_shape, _params = mpool_init(rng, output_shape)
 
-    mpool1_init,mpool1 = stax.MaxPool(
-        window_shape=(2, 2),
-        strides=(2, 2),
-        padding='VALID'   # or 'SAME'
-    )
-
-    out_shape, _params = mpool1_init(rng, output_shape)
-
-    conv2_init, conv2 = stax.Conv(10, (3, 3), strides=(1, 1), padding='SAME')
-
+    conv2_init, conv2 = stax.Conv(OUTCHANNELS, (7, 7), strides=(1, 1), padding='SAME')
     out_shape, conv2params = conv2_init(rng, output_shape)
+    out_shape, _params = mpool_init(rng, output_shape)
 
-    mpool2_init,mpool2 = stax.MaxPool(
-        window_shape=(2, 2),
-        strides=(2, 2),
-        padding='VALID'   # or 'SAME'
-    )
-
-    out_shape, _params = mpool2_init(rng, output_shape)
-
-    conv3_init, conv3 = stax.Conv(10, (3, 3), strides=(1, 1), padding='SAME')
-
+    conv3_init, conv3 = stax.Conv(OUTCHANNELS, (5, 5), strides=(1, 1), padding='SAME')
     out_shape, conv3params = conv3_init(rng, output_shape)
+    out_shape, _params = mpool_init(rng, output_shape)
 
-    mpool3_init,mpool3 = stax.MaxPool(
-        window_shape=(2, 2),
-        strides=(2, 2),
-        padding='VALID'   # or 'SAME'
-    )
 
-    out_shape, _params = mpool3_init(rng, output_shape)
+    conv4_init, conv4 = stax.Conv(OUTCHANNELS, (4, 4), strides=(1, 1), padding='SAME')
+    out_shape, conv4params = conv4_init(rng, output_shape)
+    out_shape, _params = mpool_init(rng, output_shape)
 
 
     ### Decoder - Conv and Up Sample
 
-    conv4_init, conv4 = stax.Conv(10, (3, 3), strides=(1, 1), padding='SAME')
-    out_shape, conv4params = conv4_init(rng, output_shape)
-
-    out_shape = upsample2d(X_test[:2]).shape
-
-    conv5_init, conv5 = stax.Conv(10, (3, 3), strides=(1, 1), padding='SAME')
+    conv5_init, conv5 = stax.ConvTranspose(OUTCHANNELS, (4, 4), strides=(1, 1), padding='SAME')
     out_shape, conv5params = conv5_init(rng, output_shape)
+    out_shape = upsample2d(np.random.rand(*out_shape)[:10]).shape
 
-    out_shape = upsample2d(X_test[:2]).shape
-
-    conv6_init, conv6 = stax.Conv(3, (3, 3), strides=(1, 1), padding='SAME')
+    conv6_init, conv6 = stax.ConvTranspose(OUTCHANNELS, (5, 5), strides=(1, 1), padding='SAME')
     out_shape, conv6params = conv6_init(rng, output_shape)
+    out_shape = upsample2d(np.random.rand(*out_shape)[:10]).shape
+
+    conv7_init, conv7 = stax.ConvTranspose(OUTCHANNELS, (5, 5), strides=(1, 1), padding='SAME')
+    out_shape, conv7params = conv7_init(rng, output_shape)
+    out_shape = upsample2d(np.random.rand(*out_shape)[:10]).shape
+
+    conv8_init, conv8 = stax.ConvTranspose(OUTCHANNELS, (4, 4), strides=(1, 1), padding='SAME')
+    out_shape, conv8params = conv8_init(rng, output_shape)
+    out_shape = upsample2d(np.random.rand(*out_shape)[:10]).shape
+
+
+    conv9_init, conv9 = stax.ConvTranspose(3, (3, 3), strides=(1, 1), padding='SAME')
+    out_shape, conv9params = conv9_init(rng, output_shape)
 
 
     print(out_shape)
@@ -280,15 +367,40 @@ def _(X_test, X_train, rng, stax, upsample2d):
         conv5params,
         conv6,
         conv6params,
-        mpool1,
-        mpool2,
-        mpool3,
+        conv7,
+        conv7params,
+        conv8,
+        conv8params,
+        conv9,
+        conv9params,
+        mpool,
     )
 
 
 @app.cell
+def _(
+    X_test,
+    conv1params,
+    conv2params,
+    conv3params,
+    conv4params,
+    conv5params,
+    conv6params,
+    conv7params,
+    conv8params,
+    conv9params,
+    decoder,
+    encoder,
+):
+    _out = encoder([conv1params, conv2params, conv3params, conv4params],X_test[:19])
+    _out2 = decoder([conv5params, conv6params,conv7params,conv8params, conv9params],_out)
+    _out.shape, _out2.shape
+    return
+
+
+@app.cell
 def _(np):
-    def get_batch_ids(n, batch_size=100):
+    def get_batch_ids(n, batch_size):
         ids = np.arange(n)
         np.random.shuffle(ids)
 
